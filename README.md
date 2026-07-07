@@ -69,7 +69,7 @@ client.CaptureException(err)
 // Per-call options:
 client.CaptureException(err,
 	rewindrewind.WithLevel("fatal"),
-	rewindrewind.WithUser(rewindrewind.User{ID: "u_42", Email: "a@b.com"}),
+	rewindrewind.WithIdentity(rewindrewind.Identity{ID: "u_42", Email: "a@b.com"}),
 	rewindrewind.WithTag("region", "us-east"),
 	rewindrewind.WithExtra("order_id", 12345),
 	rewindrewind.WithFingerprint("checkout-charge-failed"),

@@ -22,7 +22,7 @@ type exceptionPayload struct {
 	Fingerprint string            `json:"fingerprint,omitempty"`
 	Exception   exceptionDetail   `json:"exception"`
 	Request     map[string]any    `json:"request,omitempty"`
-	User        *User             `json:"user,omitempty"`
+	Identity    *Identity         `json:"identity,omitempty"`
 	Tags        map[string]string `json:"tags,omitempty"`
 	Extra       map[string]any    `json:"extra,omitempty"`
 }
@@ -38,7 +38,7 @@ type eventPayload struct {
 	Type        string         `json:"type"`
 	Environment string         `json:"environment"`
 	Release     string         `json:"release,omitempty"`
-	DistinctID  string         `json:"distinct_id,omitempty"`
+	IdentityID  string         `json:"identity_id,omitempty"`
 	AnonymousID string         `json:"anonymous_id,omitempty"`
 	Source      string         `json:"source,omitempty"`
 	Properties  map[string]any `json:"properties,omitempty"`
@@ -83,8 +83,8 @@ func (c *Client) CaptureExceptionContext(ctx context.Context, err error, opts ..
 			// +1 to skip CaptureExceptionContext itself.
 			Stacktrace: captureStack(o.skip + 1),
 		},
-		Request: scrubAnyMap(o.request),
-		User:    o.user,
+		Request:  scrubAnyMap(o.request),
+		Identity: o.identity,
 		Tags:    scrubStringMap(c.mergeTags(o.tags)),
 		Extra:   scrubAnyMap(o.extra),
 	}

@@ -1,7 +1,7 @@
 package rewindrewind
 
-// User identifies the affected end user for an exception.
-type User struct {
+// Identity identifies the affected end user for an exception.
+type Identity struct {
 	ID    string `json:"id,omitempty"`
 	Email string `json:"email,omitempty"`
 }
@@ -11,7 +11,7 @@ type captureOptions struct {
 	level       string
 	message     string
 	fingerprint string
-	user        *User
+	identity    *Identity
 	tags        map[string]string
 	extra       map[string]any
 	request     map[string]any
@@ -37,9 +37,9 @@ func WithFingerprint(fingerprint string) Option {
 	return func(o *captureOptions) { o.fingerprint = fingerprint }
 }
 
-// WithUser attaches the affected user.
-func WithUser(user User) Option {
-	return func(o *captureOptions) { u := user; o.user = &u }
+// WithIdentity attaches the affected user's identity.
+func WithIdentity(identity Identity) Option {
+	return func(o *captureOptions) { i := identity; o.identity = &i }
 }
 
 // WithTag adds a single tag, merged over the client's default tags.
