@@ -1,17 +1,15 @@
-# rewindrewind-go
+# RewindRewind Go SDK
 
-The official Go SDK for [RewindRewind](https://rewindrewind.com) — capture
-exceptions and product events from your Go services.
+The official Go SDK for [RewindRewind](https://rewindrewind.com). It captures
+exceptions and product events from Go services using only the standard library.
 
-- **Standard library only.** No third-party dependencies (`net/http`,
-  `encoding/json`, `runtime`).
-- **Context-aware.** Every capture has a `…Context` variant.
-- **Accurate stack traces.** Captured at the call site via `runtime.Callers`,
-  with correct `in_app` classification so RewindRewind picks the right culprit.
-- **Safe by construction.** Capture never panics the caller and never blocks for
-  more than the configured timeout (default 2s).
+## Requirements
 
-```
+Go 1.22 or newer.
+
+## Installation
+
+```sh
 go get rewindrewind.com/go
 ```
 
@@ -21,7 +19,6 @@ go get rewindrewind.com/go
 package main
 
 import (
-	"errors"
 	"os"
 
 	"rewindrewind.com/go"
@@ -29,7 +26,7 @@ import (
 
 func main() {
 	rewindrewind.Init(rewindrewind.Config{
-		Key:         os.Getenv("REWINDREWIND_PROJECT_KEY"), // rrpub_…
+		Key:         os.Getenv("REWINDREWIND_PROJECT_KEY"), // rrpub_xxx
 		Environment: "production",
 		Release:     "v1.2.3",
 	})
@@ -40,56 +37,77 @@ func main() {
 }
 ```
 
-The endpoint defaults to `https://rewindrewind.com`. Override it with
-`Config.Endpoint` or the `REWINDREWIND_ENDPOINT` environment variable.
+Project keys start with `rrpub_` and are public ingestion credentials. Do not
+put an admin key, which starts with `rr_`, in application code.
 
 ## Configuration
 
 ```go
 client := rewindrewind.New(rewindrewind.Config{
-	Key:         "rrpub_…",            // required: project public ingestion key
-	Environment: "production",          // required: ≤64 chars
-	Release:     "v1.2.3",              // optional
-	Tags:        map[string]string{"service": "checkout"}, // merged into every payload
-	Timeout:     2 * time.Second,       // optional, default 2s
+	Key:         os.Getenv("REWINDREWIND_PROJECT_KEY"),
+	Environment: "production",
+	Release:     "v1.2.3",
+	Tags:        map[string]string{"service": "checkout"},
+	Timeout:     2 * time.Second,
 	Enabled:     rewindrewind.Bool(true),
-	OnError:     func(err error) { log.Println("rewindrewind:", err) }, // optional debug hook
+	OnError:     func(err error) { log.Println("rewindrewind:", err) },
 })
 ```
 
-`New` returns a `*Client` you can pass around; `Init` additionally installs a
-package-level default used by the top-level `CaptureException` / `CaptureEvent` /
-`Middleware` / `Recover` helpers.
+| Field | Default | Notes |
+| --- | --- | --- |
+| `Key` | Empty | Required project key; an empty key disables capture |
+| `Endpoint` | `REWINDREWIND_ENDPOINT`, then `https://rewindrewind.com` | HTTPS required except for loopback hosts |
+| `Environment` | Empty | Required; trimmed and limited to 64 characters |
+| `Release` | Empty | Optional release or Git SHA |
+| `Tags` | `nil` | Merged into exception tags and event properties |
+| `Timeout` | 2 seconds | Used when the SDK creates the HTTP client |
+| `Enabled` | `nil`, meaning enabled | Set with `rewindrewind.Bool(false)` to disable capture |
+| `HTTPClient` | SDK client | Supply a custom transport or timeout policy |
+| `OnError` | `nil` | Receives nonfatal validation, transport, and encoding errors |
+
+`New` returns a concurrency-safe `*Client`. `Init` also installs it as the
+package default used by `CaptureException`, `CaptureEvent`, `Middleware`,
+`Recover`, and their related helpers.
 
 ## Capturing exceptions
 
 ```go
-client.CaptureException(err)
-
-// Per-call options:
-client.CaptureException(err,
+eventID := client.CaptureException(err,
 	rewindrewind.WithLevel("fatal"),
-	rewindrewind.WithIdentity(rewindrewind.Identity{ID: "u_42", Email: "a@b.com"}),
-	rewindrewind.WithTag("region", "us-east"),
+	rewindrewind.WithMessage("checkout charge failed"),
+	rewindrewind.WithIdentity(rewindrewind.Identity{ID: "u_42", Email: "a@example.com"}),
+	rewindrewind.WithTags(map[string]string{"region": "us-east"}),
 	rewindrewind.WithExtra("order_id", 12345),
 	rewindrewind.WithFingerprint("checkout-charge-failed"),
 )
-
-// Context-aware (request-scoped deadlines/cancellation):
-client.CaptureExceptionContext(ctx, err)
 ```
 
-`CaptureException` returns the server-assigned event ID, or `""` if disabled or
-the send failed.
+`CaptureException` returns the server-assigned event ID, or `""` when capture
+is disabled or unsuccessful. `WithRequest` adds request context. `WithSkip`
+removes wrapper frames when capture is called through your own helper.
+
+Use a context to add request-scoped cancellation or deadlines:
+
+```go
+eventID := client.CaptureExceptionContext(ctx, err)
+```
+
+Capture never panics the caller. The default HTTP client limits a request to two
+seconds. A custom `HTTPClient` controls its own timeout, and a context deadline
+can impose an additional bound.
 
 ## Capturing events
 
 ```go
-client.CaptureEvent("checkout_completed", map[string]any{
+client.CaptureEvent("checkout.completed", map[string]any{
 	"amount":   4999,
 	"currency": "usd",
 })
 ```
+
+Use `CaptureEventContext` when the operation should follow a context deadline or
+cancellation signal.
 
 ## HTTP middleware
 
@@ -97,30 +115,46 @@ client.CaptureEvent("checkout_completed", map[string]any{
 mux := http.NewServeMux()
 mux.HandleFunc("/", handler)
 
-// Recovers panics in handlers, reports them with request context, responds 500.
-http.ListenAndServe(":8080", rewindrewind.Middleware(mux))
+wrapped := client.Middleware(mux)
+log.Fatal(http.ListenAndServe(":8080", wrapped))
 ```
+
+The middleware recovers handler panics, reports them with safe request context,
+and responds with status 500. It does not propagate the panic.
 
 ## Recovering goroutines
 
 ```go
 go func() {
-	defer client.Recover()        // report, then re-panic (process still crashes)
-	// or: defer client.RecoverSilent()  // report and swallow
+	defer client.Recover()
 	doBackgroundWork()
 }()
 ```
 
-## How `in_app` / culprit detection works
+`Recover` reports and re-panics. Use `RecoverSilent` to report and swallow the
+panic instead.
 
-RewindRewind derives an issue's **culprit** from the first stack frame marked
-`in_app: true` (falling back to the last frame). This SDK marks a frame `in_app`
-when it is **first-party application code** — i.e. NOT under `GOROOT` (standard
-library / runtime) and NOT under a module cache path (`/go/pkg/mod/`,
-`/pkg/mod/`). The SDK's own frames are always elided. The result is that the
-culprit points at the line in your code where the error was captured, not at the
-SDK or the standard library.
+## Data safety
+
+The SDK recursively redacts common sensitive keys in tags, extra data, request
+context, and event properties. Redacted values become `"[FILTERED]"`. Automatic
+HTTP request context omits query strings and removes query parameters from the
+referrer. The SDK also refuses non-HTTPS endpoints except for loopback hosts.
+
+## Stack frame classification
+
+RewindRewind derives an issue's culprit from the first stack frame marked
+`in_app: true`, falling back to the last frame. The SDK captures the call site,
+removes its own frames, and marks standard-library, runtime, and Go module cache
+frames as non-application code. Reported paths are shortened to avoid exposing
+absolute build-machine paths.
+
+## Development
+
+```sh
+bin/test
+```
 
 ## License
 
-MIT.
+MIT
